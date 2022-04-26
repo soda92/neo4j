@@ -15,6 +15,7 @@ jobs:
         with:
           path: |
             ~/.m2
+          key: ${{ runner.os }}
 
       - name: build
         run: mvn --no-transfer-progress install
@@ -29,6 +30,7 @@ jobs:
         with:
           path: |
             ~/.m2
+          key: ${{ runner.os }}
 
       - name: build
         run: mvn --no-transfer-progress install
