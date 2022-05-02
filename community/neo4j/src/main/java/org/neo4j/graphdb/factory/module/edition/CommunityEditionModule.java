@@ -37,7 +37,7 @@ import org.neo4j.dbms.CommunityDatabaseStateService;
 import org.neo4j.dbms.DatabaseStateService;
 import org.neo4j.dbms.api.DatabaseManagementService;
 import org.neo4j.dbms.database.DatabaseContext;
-import org.neo4j.dbms.database.DatabaseIdCacheClearingListener;
+import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener;
 import org.neo4j.dbms.database.DatabaseInfoService;
 import org.neo4j.dbms.database.DatabaseManager;
 import org.neo4j.dbms.database.DatabaseOperationCounts;
@@ -69,7 +69,9 @@ import org.neo4j.kernel.api.security.provider.SecurityProvider;
 import org.neo4j.kernel.availability.CompositeDatabaseAvailabilityGuard;
 import org.neo4j.kernel.database.DatabaseStartupController;
 import org.neo4j.kernel.database.GlobalAvailabilityGuardController;
+import org.neo4j.kernel.database.MapCachingDatabaseReferenceRepository;
 import org.neo4j.kernel.database.NamedDatabaseId;
+import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository;
 import org.neo4j.kernel.impl.constraints.ConstraintSemantics;
 import org.neo4j.kernel.impl.constraints.StandardConstraintSemantics;
 import org.neo4j.kernel.impl.core.DefaultLabelIdCreator;
@@ -86,6 +88,7 @@ import org.neo4j.logging.log4j.LogExtended;
 import org.neo4j.monitoring.Monitors;
 import org.neo4j.procedure.builtin.routing.AbstractRoutingProcedureInstaller;
 import org.neo4j.procedure.builtin.routing.ClientRoutingDomainChecker;
+import org.neo4j.procedure.builtin.routing.DefaultDatabaseAvailabilityChecker;
 import org.neo4j.procedure.builtin.routing.SingleInstanceRoutingProcedureInstaller;
 import org.neo4j.server.CommunityNeoWebServer;
 import org.neo4j.server.config.AuthConfigProvider;
@@ -117,10 +120,10 @@ public class CommunityEditionModule extends StandaloneEditionModule
     protected final GlobalModule globalModule;
     protected final ServerIdentity identityModule;
     private final CompositeDatabaseAvailabilityGuard globalAvailabilityGuard;
-    private final FabricServicesBootstrap fabricServicesBootstrap;
 
     protected DatabaseStateService databaseStateService;
     private ReadOnlyDatabases globalReadOnlyChecker;
+    private FabricServicesBootstrap fabricServicesBootstrap;
 
     public CommunityEditionModule( GlobalModule globalModule )
     {
@@ -157,7 +160,6 @@ public class CommunityEditionModule extends StandaloneEditionModule
         connectionTracker = globalDependencies.satisfyDependency( createConnectionTracker() );
         globalAvailabilityGuard = globalModule.getGlobalAvailabilityGuard();
 
-        fabricServicesBootstrap = new FabricServicesBootstrap.Community( globalModule.getGlobalLife(), globalDependencies, globalModule.getLogService() );
     }
 
     @Override
@@ -174,7 +176,16 @@ public class CommunityEditionModule extends StandaloneEditionModule
                                                              globalModule.getTransactionEventListeners(), globalModule.getGlobalLife(),
                                                              globalModule.getLogService().getInternalLogProvider() );
 
-        var databaseIdCacheCleaner = new DatabaseIdCacheClearingListener( databaseManager.databaseIdRepository() );
+        var databaseReferenceRepo = new MapCachingDatabaseReferenceRepository(
+                new SystemGraphDatabaseReferenceRepository( databaseManager::getSystemDatabaseContext ) );
+        this.databaseReferenceRepo = databaseReferenceRepo;
+
+        fabricServicesBootstrap = new FabricServicesBootstrap.Community( globalModule.getGlobalLife(),
+                                                                         globalModule.getGlobalDependencies(),
+                                                                         globalModule.getLogService(),
+                                                                         databaseManager, databaseReferenceRepo );
+
+        var databaseIdCacheCleaner = new DatabaseReferenceCacheClearingListener( databaseManager.databaseIdRepository(), databaseReferenceRepo );
         globalModule.getTransactionEventListeners().registerTransactionEventListener( SYSTEM_DATABASE_NAME, databaseIdCacheCleaner );
 
         return databaseManager;
@@ -265,16 +276,23 @@ public class CommunityEditionModule extends StandaloneEditionModule
     {
         globalProcedures.register( new StandaloneDatabaseStateProcedure( databaseStateService,
                 databaseManager.databaseIdRepository(), globalModule.getGlobalConfig().get( BoltConnector.advertised_address ).toString() ) );
+
+        var routingProcedureInstaller =
+                createRoutingProcedureInstaller( globalModule, databaseManager,
+                                                 globalModule.getGlobalDependencies().resolveDependency( ClientRoutingDomainChecker.class ) );
+        routingProcedureInstaller.install( globalProcedures );
     }
 
     @Override
     protected AbstractRoutingProcedureInstaller createRoutingProcedureInstaller( GlobalModule globalModule, DatabaseManager<?> databaseManager,
                                                                                  ClientRoutingDomainChecker clientRoutingDomainChecker )
     {
-        ConnectorPortRegister portRegister = globalModule.getConnectorPortRegister();
-        Config config = globalModule.getGlobalConfig();
-        LogProvider logProvider = globalModule.getLogService().getInternalLogProvider();
-        return new SingleInstanceRoutingProcedureInstaller( databaseManager, clientRoutingDomainChecker, portRegister, config, logProvider );
+        var portRegister = globalModule.getConnectorPortRegister();
+        var config = globalModule.getGlobalConfig();
+        var logProvider = globalModule.getLogService().getInternalLogProvider();
+        var databaseAvailabilityChecker = new DefaultDatabaseAvailabilityChecker( databaseManager );
+        return new SingleInstanceRoutingProcedureInstaller( databaseAvailabilityChecker, clientRoutingDomainChecker,
+                                                            portRegister, config, logProvider, databaseReferenceRepo );
     }
 
     @Override
