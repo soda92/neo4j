@@ -50,16 +50,19 @@ import static org.neo4j.configuration.GraphDatabaseSettings.default_database;
 import static org.neo4j.internal.kernel.api.procs.DefaultParameterValue.nullValue;
 import static org.neo4j.internal.kernel.api.procs.ProcedureSignature.procedureSignature;
 import static org.neo4j.kernel.api.exceptions.Status.Database.DatabaseUnavailable;
+import static org.neo4j.kernel.api.exceptions.Status.Database.IllegalAliasChain;
 import static org.neo4j.kernel.api.exceptions.Status.Procedure.ProcedureCallFailed;
 import static org.neo4j.procedure.builtin.routing.ParameterNames.CONTEXT;
 import static org.neo4j.procedure.builtin.routing.ParameterNames.DATABASE;
 import static org.neo4j.procedure.builtin.routing.ParameterNames.SERVERS;
 import static org.neo4j.procedure.builtin.routing.ParameterNames.TTL;
+import static org.neo4j.values.storable.Values.NO_VALUE;
 
 public final class GetRoutingTableProcedure implements CallableProcedure
 {
     private static final String NAME = "getRoutingTable";
     public static final String ADDRESS_CONTEXT_KEY = "address";
+    public static final String FROM_ALIAS_KEY = "alias";
 
     private final ProcedureSignature signature;
     private final DatabaseReferenceRepository databaseReferenceRepo;
@@ -111,6 +114,7 @@ public final class GetRoutingTableProcedure implements CallableProcedure
         var routingContext = extractRoutingContext( input );
 
         assertBoltConnectorEnabled( databaseReference );
+        assertNotIllegalAliasChain( databaseReference, routingContext );
         try
         {
             var result = invoke( databaseReference, routingContext );
@@ -121,7 +125,7 @@ public final class GetRoutingTableProcedure implements CallableProcedure
         catch ( ProcedureException ex )
         {
             // Check that the cause of the exception wasn't the database being removed while this procedure was running.
-            validator.assertDatabaseExists( databaseReference );
+            assertDatabaseExists( databaseReference );
             // otherwise re-throw
             throw ex;
         }
@@ -153,7 +157,7 @@ public final class GetRoutingTableProcedure implements CallableProcedure
     {
         var arg = input[1];
         final String databaseName;
-        if ( arg == Values.NO_VALUE )
+        if ( arg == NO_VALUE )
         {
             databaseName = defaultDatabaseName;
         }
@@ -170,18 +174,10 @@ public final class GetRoutingTableProcedure implements CallableProcedure
                                     .orElseThrow( () -> RoutingTableProcedureHelpers.databaseNotFoundException( databaseName ) );
     }
 
-    private static void assertRoutingResultNotEmpty( RoutingResult result, DatabaseReference databaseReference ) throws ProcedureException
-    {
-        if ( result.containsNoEndpoints() )
-        {
-            throw new ProcedureException( DatabaseUnavailable, "Routing table for database " + databaseReference.alias() + " is empty" );
-        }
-    }
-
     private static MapValue extractRoutingContext( AnyValue[] input )
     {
         var arg = input[0];
-        if ( arg == Values.NO_VALUE )
+        if ( arg == NO_VALUE )
         {
             return MapValue.EMPTY;
         }
@@ -234,4 +230,34 @@ public final class GetRoutingTableProcedure implements CallableProcedure
                                                                BoltConnector.enabled.name() + "'" );
         }
     }
+
+    private static void assertRoutingResultNotEmpty( RoutingResult result, DatabaseReference databaseReference ) throws ProcedureException
+    {
+        if ( result.containsNoEndpoints() )
+        {
+            throw new ProcedureException( DatabaseUnavailable, "Routing table for database " + databaseReference.alias() + " is empty" );
+        }
+    }
+
+    private void assertDatabaseExists( DatabaseReference databaseReference ) throws ProcedureException
+    {
+        databaseReferenceRepo.getByName( databaseReference.alias() )
+                             .orElseThrow( () -> RoutingTableProcedureHelpers.databaseNotFoundException( databaseReference.alias().name() ) );
+    }
+
+    private void assertNotIllegalAliasChain( DatabaseReference databaseReference, MapValue routingContext ) throws ProcedureException
+    {
+        var refIsRemoteAlias = databaseReference instanceof DatabaseReference.External;
+
+        var sourceAlias = routingContext.get( FROM_ALIAS_KEY );
+        var sourceAliasIsPresent = sourceAlias != null && sourceAlias != NO_VALUE;
+        if ( refIsRemoteAlias && sourceAliasIsPresent )
+        {
+            var sourceAliasString = ((TextValue) sourceAlias).stringValue();
+            throw new ProcedureException( IllegalAliasChain, "Unable to provide a routing table for the database '" + databaseReference.alias().name() +
+                                                             "' because the request came from another alias '" + sourceAliasString + "' and alias chains " +
+                                                             "are not permitted." );
+        }
+    }
+
 }

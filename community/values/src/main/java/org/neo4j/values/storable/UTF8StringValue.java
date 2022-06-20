@@ -309,7 +309,7 @@ public final class UTF8StringValue extends StringValue
         {
             return StringValue.EMPTY;
         }
-        return new UTF8StringValue( values, startIndex, values.length - startIndex );
+        return new UTF8StringValue( values, startIndex, byteLength - (startIndex - offset) );
     }
 
     @Override
@@ -576,7 +576,7 @@ public final class UTF8StringValue extends StringValue
     private int trimRightIndex()
     {
         int index = offset + byteLength - 1;
-        while ( index >= 0 )
+        while ( index >= offset )
         {
             byte b = bytes[index];
             //If high bit is zero (equivalent to the byte being positive in two's complement)
