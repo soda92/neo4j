@@ -5,7 +5,7 @@
 
   <groupId>org.neo4j</groupId>
   <artifactId>parent</artifactId>
-  <version>4.4.9-SNAPSHOT</version>
+  <version>4.4.11-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Neo4j</name>
   <description>Neo4j Graph Database</description>
@@ -113,7 +113,7 @@
     <jamm.version>0.3.3</jamm.version>
     <lucene.version>8.9.0</lucene.version>
     <bouncycastle.version>1.69</bouncycastle.version>
-    <jetty.version>9.4.43.v20210629</jetty.version>
+    <jetty.version>9.4.48.v20220622</jetty.version>
     <scala-maven-plugin.version>4.4.0</scala-maven-plugin.version>
     <scala.version>2.12.13</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
@@ -137,7 +137,7 @@
             in Log4jPluginLoadingWorkaround that must be verified to still work after bumping the version. -->
     <log4j.version>2.17.1</log4j.version>
     <slf4j.version>1.7.30</slf4j.version>
-    <neo4j-java-driver.version>4.4.6</neo4j-java-driver.version>
+    <neo4j-java-driver.version>4.4.9</neo4j-java-driver.version>
     <skip-scalastyle>false</skip-scalastyle>
   </properties>
 
@@ -985,7 +985,7 @@
       <dependency>
         <groupId>org.apache.shiro</groupId>
         <artifactId>shiro-core</artifactId>
-        <version>1.8.0</version>
+        <version>1.9.1</version>
       </dependency>
       <dependency>
         <groupId>com.github.ben-manes.caffeine</groupId>
@@ -1317,15 +1317,10 @@
         <artifactId>zstd-jni</artifactId>
         <version>1.5.0-4</version>
       </dependency>
-
-      <!--
-       - Please note that when updating this dependency (i.e. due to a security vulnerability or bug) that the corresponding driver dependency also
-       - needs updating.
-       -->
       <dependency>
         <groupId>io.netty</groupId>
         <artifactId>netty-bom</artifactId>
-        <version>4.1.75.Final</version>
+        <version>4.1.77.Final</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

@@ -20,6 +20,7 @@
 package org.neo4j.cypher.internal.compiler.planner.logical
 
 import org.apache.commons.io.FileUtils
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.cypher.graphcounts.GraphCountsJson
 import org.neo4j.cypher.internal.compiler.helpers.LogicalPlanBuilder
 import org.neo4j.cypher.internal.compiler.planner.LogicalPlanningIntegrationTestSupport
@@ -55,6 +56,8 @@ import org.neo4j.cypher.internal.util.LabelId
 import org.neo4j.cypher.internal.util.RelTypeId
 import org.neo4j.cypher.internal.util.test_helpers.CypherFunSuite
 import org.scalatest.Inside
+
+import java.lang.Boolean.FALSE
 
 class OptionalMatchIDPPlanningIntegrationTest extends OptionalMatchPlanningIntegrationTest(QueryGraphSolverWithIDPConnectComponents)
 class OptionalMatchGreedyPlanningIntegrationTest extends OptionalMatchPlanningIntegrationTest(QueryGraphSolverWithGreedyConnectComponents)
@@ -372,10 +375,7 @@ abstract class OptionalMatchPlanningIntegrationTest(queryGraphSolverSetup: Query
 
     val plan = cfg.getLogicalPlanFor(query)._2
     withClue(plan) {
-      plan.folder.treeExists {
-        case _: RightOuterHashJoin => true
-        case _: LeftOuterHashJoin => true
-      } should be(false)
+      containsOuterHashJoin(plan) shouldBe false
     }
   }
 
@@ -444,7 +444,7 @@ abstract class OptionalMatchPlanningIntegrationTest(queryGraphSolverSetup: Query
     plan.stripProduceResults shouldBe an[OptionalExpand]
   }
 
-  test("should pick a right outer hash join with hint if it is cheaper than left outer hash join, also in a tail query") {
+  test("should not pick an outer hash join with hint if the join could end up in RHS of an apply") {
     val cfg = plannerBuilder()
       .setAllNodesCardinality(52)
       .setLabelCardinality("A", 50)
@@ -453,6 +453,65 @@ abstract class OptionalMatchPlanningIntegrationTest(queryGraphSolverSetup: Query
       .setRelationshipCardinality("(:A)-[]-()", 30)
       .setRelationshipCardinality("()-[]-(:B)", 30)
       .setRelationshipCardinality("(:A)-[]-(:B)", 30)
+      .withSetting(GraphDatabaseSettings.cypher_hints_error, FALSE)
+      .build()
+
+    val tailQuery =
+      s"""MATCH (a: A)
+         |WITH a, 1 AS horizon
+         |OPTIONAL MATCH (a)-[r]->(b:B)
+         |USING JOIN ON a
+         |OPTIONAL MATCH (a)--(c)
+         |RETURN a.name, b.name""".stripMargin
+
+    val tailPlan = cfg.plan(tailQuery)
+
+    withClue(tailPlan) {
+      containsOuterHashJoin(tailPlan) shouldBe false
+    }
+  }
+
+  test(
+    "should not pick an outer hash join with hint if any of the join nodes is from the outer apply(even join nodes that are not hinted about)."
+  ) {
+    val cfg = plannerBuilder()
+      .setAllNodesCardinality(52)
+      .setLabelCardinality("A", 50)
+      .setLabelCardinality("B", 2)
+      .setRelationshipCardinality("()-[]-()", 30)
+      .setRelationshipCardinality("(:A)-[]-()", 30)
+      .setRelationshipCardinality("()-[]-(:B)", 30)
+      .setRelationshipCardinality("(:A)-[]-(:B)", 30)
+      .withSetting(GraphDatabaseSettings.cypher_hints_error, FALSE)
+      .build()
+
+    val tailQuery =
+      s"""MATCH (a: A)
+         |WITH a, 1 AS horizon
+         |MATCH (b: B)
+         |// all nodes coming in as arguments to the optional expand will be seen as join nodes
+         |// (this fails to plan a hash join because "a" is seen as a join node and a comes from the outer scope.)
+         |OPTIONAL MATCH (b)--(c{foo:a.prop})
+         |USING JOIN ON b
+         |RETURN a.name, b.name""".stripMargin
+
+    val tailPlan = cfg.plan(tailQuery)
+
+    withClue(tailPlan) {
+      containsOuterHashJoin(tailPlan) shouldBe false
+    }
+  }
+
+  test("should pick an outer hash join with hint if it is cheaper than left outer hash join and if the outer query does not contain any join node.") {
+    val cfg = plannerBuilder()
+      .setAllNodesCardinality(52)
+      .setLabelCardinality("A", 50)
+      .setLabelCardinality("B", 2)
+      .setRelationshipCardinality("()-[]-()", 30)
+      .setRelationshipCardinality("(:A)-[]-()", 30)
+      .setRelationshipCardinality("()-[]-(:B)", 30)
+      .setRelationshipCardinality("(:A)-[]-(:B)", 30)
+      .withSetting(GraphDatabaseSettings.cypher_hints_error, FALSE)
       .build()
 
     val noTailQuery =
@@ -460,26 +519,33 @@ abstract class OptionalMatchPlanningIntegrationTest(queryGraphSolverSetup: Query
         |OPTIONAL MATCH (a)-[r]->(b:B)
         |USING JOIN ON a
         |RETURN a.name, b.name""".stripMargin
-    val tailQuery =
+    val enclosingQGDoesNotContainJoinNode =
       s"""MATCH (x:A)
          |WITH x, 1 AS foo
          |MATCH (a:A)
          |OPTIONAL MATCH (a)-[r]->(b:B)
          |USING JOIN ON a
          |RETURN a.name, b.name""".stripMargin
+    val enclosingQGContainsJoinNode =
+      s"""MATCH (a:A)
+         |WITH a, 1 as foo
+         |MATCH (x:A)
+         |OPTIONAL MATCH (a)-[r]->(b:B)
+         |USING JOIN ON a
+         |RETURN a.name, b.name""".stripMargin
 
     val noTailPlan = cfg.plan(noTailQuery)
-    val tailPlan = cfg.plan(tailQuery)
+    val enclosingQGDoesNotContainJoinNodePlan = cfg.plan(enclosingQGDoesNotContainJoinNode)
+    val enclosingQGContainsJoinNodePlan = cfg.plan(enclosingQGContainsJoinNode)
 
     withClue(noTailPlan) {
-      noTailPlan.folder.treeExists {
-        case _: RightOuterHashJoin => true
-      } should be(true)
+      containsOuterHashJoin(noTailPlan) shouldBe true
     }
-    withClue(tailPlan) {
-      tailPlan.folder.treeExists {
-        case _: RightOuterHashJoin => true
-      } should be(true)
+    withClue(enclosingQGDoesNotContainJoinNodePlan) {
+      containsOuterHashJoin(enclosingQGDoesNotContainJoinNodePlan) shouldBe true
+    }
+    withClue(enclosingQGContainsJoinNodePlan) {
+      containsOuterHashJoin(enclosingQGContainsJoinNodePlan) shouldBe false
     }
   }
 
@@ -796,5 +862,12 @@ abstract class OptionalMatchPlanningIntegrationTest(queryGraphSolverSetup: Query
         .expandAll("(n0)-[r1]->(n1)")
         .allNodeScan("n0")
         .build()
+  }
+
+  def containsOuterHashJoin(plan: LogicalPlan): Boolean = {
+    plan.folder.treeExists {
+      case _: RightOuterHashJoin => true
+      case _: LeftOuterHashJoin  => true
+    }
   }
 }
