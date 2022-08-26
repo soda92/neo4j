@@ -17,7 +17,7 @@ jobs:
           cache: maven
 
       - name: build
-        run: mvn install -Dlicensing.skip --no-transfer-progress
+        run: mvn --% install -"Dlicensing.skip" --no-transfer-progress
 
   build-ubuntu:
     runs-on: ubuntu-latest
